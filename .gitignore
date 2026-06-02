@@ -1,0 +1,40 @@
+# Local-only source and scratch areas
+dev/
+git/
+models/
+tmp/
+tests/
+teitok/
+xmlfiles/
+
+# Python bytecode / cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Build artefacts
+build/
+dist/
+*.egg
+*.egg-info/
+flexiconv.egg-info/
+.eggs/
+
+# Releaseable app installers (apps/README.md is kept)
+apps/*.dmg
+apps/*.exe
+apps/*.AppImage
+apps/*.app
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+*.swo

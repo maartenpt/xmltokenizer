@@ -1,0 +1,73 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "xmltokenizer"
+dynamic = ["version"]
+description = "Robust inline tokenization of TEI/XML and generic XML, designed for flexipipe and standalone use."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "Maarten Janssen" },
+]
+keywords = ["tei", "xml", "tokenization", "nlp", "udpipe", "flexipipe", "teitok", "conllu"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Text Processing :: Linguistic",
+    "Topic :: Text Processing :: Markup :: XML",
+]
+
+dependencies = [
+    # Everything xmltokenizer needs at runtime is in the stdlib. The only
+    # situational dep is TOML reading: stdlib `tomllib` arrived in 3.11,
+    # so 3.10 callers get the `tomli` backport. On 3.10 without `tomli`
+    # we fall back to the bundled `_minitoml.py` parser, but installing
+    # `tomli` is preferred — it implements the full TOML spec.
+    "tomli>=2.0; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+]
+
+[project.scripts]
+# `xmltokenize file.xml` shell command after installation. The module is
+# also runnable as `python -m xmltokenizer`.
+xmltokenize = "xmltokenizer.cli:main"
+
+[project.urls]
+"Design docs" = "https://github.com/maartenpt/xmltokenizer/tree/main/dev"
+
+# ---------------------------------------------------------------------
+# Hatchling configuration
+# ---------------------------------------------------------------------
+
+[tool.hatch.version]
+# Single source of truth: __version__ in __init__.py.
+path = "xmltokenizer/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+# Bundle the built-in profile TOML files with the wheel so a fresh
+# install can `load_profile("tei")` without extra setup.
+packages = ["xmltokenizer"]
+
+[tool.hatch.build.targets.wheel.shared-data]
+# (none — profile TOMLs live inside the package, picked up automatically)
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "xmltokenizer/",
+    "tests/",
+    "dev/",
+    "xmlfiles/",
+    "README.md",
+    "pyproject.toml",
+]

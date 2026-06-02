@@ -1,0 +1,22 @@
+# Generic XML profile — no TEI-specific knowledge.
+# Scope is the root element. No exclusions, no preferred branches, no
+# break-attribute semantics. The tool will tokenize all character data
+# under the root, splitting any inline element it encounters.
+
+name = "generic"
+
+exclude_elements = []
+truncation_strip_chars = []
+unsplittable = []
+barrier_elements = []
+barrier_around_verbatim = false
+
+[scope]
+candidates = ["/*"]
+preserve_verbatim_outside_scope = false
+scope_excludes_at_root = []
+
+[break_attribute]
+bearers = []
+default_value = "yes"
+no_value = "no"

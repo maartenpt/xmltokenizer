@@ -1,0 +1,96 @@
+# TEI profile — the default. See dev/01-design.md §5.2.1.
+# NOTE: Top-level keys must appear BEFORE any [section] header, otherwise
+# TOML treats them as belonging to the most recent section.
+
+name = "tei"
+
+# Hard exclusion — these subtrees are removed from plaintext entirely
+# but preserved verbatim on output.
+exclude_elements = ["note", "gap"]
+
+# Truncation hyphens — used only if @break is absent and the heuristic
+# fallback is enabled.
+truncation_strip_chars = ["-", "­"]
+
+# When a truncation join (e.g. <lb break="no"/>) follows a `<pc>` whose
+# content is just a hyphen (TEI convention for a soft-hyphen punctuation
+# character), absorb the `<pc>` into the join: drop its content from
+# fold_plaintext (so NLP sees the clean joined word `wšewědaucností`
+# instead of `wšewědau-cností`), but keep the `<pc>...</pc>` as a
+# verbatim record inside the eventual `<tok>` so the output XML still
+# looks like the source.
+join_absorb_elements = ["pc"]
+
+# When an element coincides exactly with a tok's span, by default the
+# element wraps the tok FROM OUTSIDE (e.g. `<name><tok>John</tok></name>`).
+# Tags listed below flip that — they wrap FROM INSIDE the tok:
+# `<tok><del>John</del></tok>`. The set is intentionally small: it's only
+# for elements that describe the orthography of the token itself
+# (deletions, supplied characters, unclear readings, etc.).
+tok_inner_elements = ["del", "supplied", "unclear", "add", "corr"]
+
+# Anchors whose offset coincides with a tok edge default to drifting
+# OUTSIDE the tok (`<lb/><tok>word</tok>`, `<tok>word</tok><pb/>`).
+# Tags listed below stay INSIDE the tok at its edges — typically empty
+# elements that describe the word's orthography itself.
+tok_inner_anchors = ["gap"]
+
+# `unsplittable` elements: their close becomes a hard barrier in
+# nlp_plaintext, so UDPipe cannot put a sentence across them.
+unsplittable = []
+
+# `barrier_elements`: their close inserts \n\n in nlp_plaintext (so
+# sentences don't span them) but they remain structurally splittable.
+# These also act as token barriers (\n\n is a superset of a single
+# space).
+barrier_elements = ["p", "head", "div", "ab", "lg"]
+
+# `token_break_elements`: their close inserts a single space (token
+# barrier only, NOT a sentence barrier). Used for TEI elements where
+# encoders often omit whitespace in the source because the elements are
+# typically rendered as separate visual blocks. Without this, the naive
+# token "Alpha" in <cell>Alpha</cell><cell>Beta</cell> would fuse into
+# "AlphaBeta".
+token_break_elements = ["cell", "item", "l", "row", "label", "speaker", "stage", "fw"]
+
+# Insert \n\n on both sides of every verbatim subtree (e.g. <note>) so
+# UDPipe never fuses surrounding sentences across the deleted material.
+barrier_around_verbatim = true
+
+# Elements whose end is a "gold standard" chunk boundary for the chunker.
+chunk_boundary_elements = ["p", "div", "lg", "head", "ab", "lem"]
+
+[scope]
+# Ordered list of selectors; first non-empty match wins.
+# `<text>` is preferred; falls back to `<body>` (if a corpus omits `<text>`),
+# then to the root element with the standard TEI metadata elements excluded.
+candidates = ["//text", "//body", "/*"]
+preserve_verbatim_outside_scope = true
+scope_excludes_at_root = ["teiHeader", "facsimile", "standOff"]
+
+# Preferred-branch rules for elements with alternative children
+# (resolves OQ-1 per the design doc).
+[[prefer_one_child_of]]
+parent = "choice"
+prefer = ["expan", "reg", "corr"]
+fallback = "first_child"
+
+[[prefer_one_child_of]]
+parent = "app"
+prefer = ["lem"]
+fallback = "drop_all"
+
+# TEI line/column/page-break elements carry @break semantics.
+[break_attribute]
+bearers = ["lb", "cb", "pb"]
+default_value = "yes"   # TEI default: a break ends a token
+no_value = "no"          # @break="no" → join across the break
+
+[tok_attrs]
+fields_to_emit = ["lemma", "upos", "xpos", "feats", "ohead", "deprel"]
+id_template = "w-{n}"
+id_attr = "xml:id"
+
+[s_attrs]
+id_template = "s-{n}"
+id_attr = "xml:id"
