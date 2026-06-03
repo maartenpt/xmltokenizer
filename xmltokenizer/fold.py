@@ -206,14 +206,21 @@ def fold_scope(root: ScopeRoot, profile: Optional[dict] = None) -> str:
         while len(current_stack) > lcp:
             closed = current_stack.pop()
             out.append(_format_close(closed))
-        # Opens-phase. We open elements in nest order. Drift-outside
-        # anchors fire just BEFORE the first atomic (tok) opens, so they
-        # land INSIDE non-tok wrappers (`<p>`, `<s>`, ...) but OUTSIDE
-        # the tok. Wrap_inside deferreds fire AFTER their target opens.
+        # Opens-phase. Drift-outside anchors fire just BEFORE the first
+        # INSERTED open (i.e. anything not from the xml layer — `<tok>`,
+        # `<s>`, future `<name>` etc.). This way the anchor lands INSIDE
+        # any source-XML wrapper that's opening at the same offset
+        # (preserving the original `<p><lb/>...` order) but OUTSIDE the
+        # tokenization wrappers we're adding. Wrap_inside deferreds fire
+        # AFTER their target opens.
         drift_outside_fired = False
         for i in range(lcp, len(desired)):
             rec = desired[i]
-            if rec.policy == "atomic" and drift_outside and not drift_outside_fired:
+            if (
+                rec.layer != "xml"
+                and drift_outside
+                and not drift_outside_fired
+            ):
                 for d in drift_outside:
                     out.append(_format_anchor(d, root))
                 drift_outside_fired = True

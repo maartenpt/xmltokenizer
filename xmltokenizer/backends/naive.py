@@ -21,19 +21,28 @@ installation" default for the CLI.
 
 from __future__ import annotations
 
-import string
+import unicodedata
 from dataclasses import dataclass
 
-# Punctuation we peel off the edges of whitespace-separated chunks.
-# Hyphens and apostrophes inside a word are deliberately KEPT — that's
-# what makes `it's`, `state-of-the-art`, and `Mr.` survive as single
-# tokens up to a final period.
-_EDGE_PUNCT = set(string.punctuation)
-# Don't peel hyphens off the *start* or *end* of a word — they're
-# typically intra-word (compounds, dash continuations, etc.). The user
-# can still strip them with a real backend.
-_EDGE_PUNCT_LEADING = _EDGE_PUNCT - {"-"}
-_EDGE_PUNCT_TRAILING = _EDGE_PUNCT - {"-"}
+
+def _is_edge_punct(c: str) -> bool:
+    """A char is "edge punctuation" iff it's in any Unicode punctuation
+    category EXCEPT Pd (dashes). We keep dashes intra-word so compound
+    spellings like `state-of-the-art` survive as one token.
+
+    Using Unicode categories instead of ASCII `string.punctuation`
+    handles `»`, `«`, `‹`, `›`, `„`, `"`, `'`, `'`, `–`, `—`, `…`,
+    etc. — common in non-English corpora (and in well-typeset English
+    too).
+    """
+    if not c:
+        return False
+    cat = unicodedata.category(c)
+    if not cat.startswith("P"):
+        return False
+    if cat == "Pd":  # dashes (-, –, —, etc.) are kept intra-word
+        return False
+    return True
 
 
 @dataclass
@@ -118,12 +127,12 @@ def _peel_punct(word: str) -> list[str]:
     leading: list[str] = []
     trailing: list[str] = []
     # Leading punctuation.
-    while word and word[0] in _EDGE_PUNCT_LEADING:
+    while word and _is_edge_punct(word[0]):
         leading.append(word[0])
         word = word[1:]
     # Trailing punctuation.
     tail_buf: list[str] = []
-    while word and word[-1] in _EDGE_PUNCT_TRAILING:
+    while word and _is_edge_punct(word[-1]):
         tail_buf.append(word[-1])
         word = word[:-1]
     trailing = list(reversed(tail_buf))
