@@ -67,8 +67,16 @@ Default backend is `naive`: pure-Python whitespace + punctuation tokenization. N
 
 ## Install
 
+xmltokenizer is not on PyPI (yet). Install directly from the git repo:
+
 ```sh
-pip install xmltokenizer
+# replace <repo-url> with the actual remote (e.g. https://github.com/maartenpt/xmltokenizer.git)
+pip install git+<repo-url>
+
+# or, from a local clone:
+git clone <repo-url>
+cd xmltokenizer
+pip install -e .
 ```
 
 Requires Python ≥ 3.10. On 3.10 the optional `tomli` dependency is installed automatically; 3.11+ uses stdlib `tomllib`.

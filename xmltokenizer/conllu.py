@@ -198,6 +198,10 @@ def _skip_ws(plaintext: str, cursor: int) -> int:
 
 
 def _match_form(plaintext: str, cursor: int, form: str) -> tuple[int, int]:
+    """Strict form match: plaintext[cursor:cursor+len(form)] must equal
+    form exactly. Mismatches abort with a precise diagnostic — they
+    surface real upstream tokenizer bugs immediately rather than
+    silently masking them with workarounds."""
     end = cursor + len(form)
     if plaintext[cursor:end] != form:
         ctx_lo = max(0, cursor - 30)

@@ -117,9 +117,12 @@ def fold_scope(root: ScopeRoot, profile: Optional[dict] = None) -> str:
         for rec in opens_at.get(offset, []):
             active.append(rec)
 
-        # Emit plaintext from cursor to offset.
+        # Emit plaintext from cursor to offset. CDATA from the source
+        # was DECODED by expat (e.g. `&amp;` became a literal `&`), so
+        # we must re-escape the structural characters here — otherwise
+        # the output XML is malformed. See design doc EC-25.
         if offset > cursor:
-            out.append(plaintext[cursor:offset])
+            out.append(_escape_cdata(plaintext[cursor:offset]))
             cursor = offset
 
         # Identify any atomic-policy element (i.e., a <tok>) opening or
@@ -246,7 +249,7 @@ def fold_scope(root: ScopeRoot, profile: Optional[dict] = None) -> str:
 
     # Trailing plaintext after the last event.
     if cursor < len(plaintext):
-        out.append(plaintext[cursor:])
+        out.append(_escape_cdata(plaintext[cursor:]))
 
     if current_stack:  # pragma: no cover
         raise RuntimeError(
@@ -534,6 +537,29 @@ def _rebalance_with_wrap_inside(
 # ---------------------------------------------------------------------
 # Tag formatting
 # ---------------------------------------------------------------------
+
+
+def _escape_cdata(text: str) -> str:
+    """Re-escape XML structural characters in decoded CDATA.
+
+    Expat resolves entity references (`&amp;` → `&`, `&lt;` → `<` etc.)
+    when it hands character data to our `CharacterDataHandler`, so
+    `fold_plaintext` and the join-region whitespace fields contain
+    LITERAL `&`, `<`, `>`. When we splice those back into the output
+    XML we have to re-escape — otherwise the output is malformed (an
+    `&` in the source would generate an unparseable output). Per design
+    doc EC-25, named entities are not preserved as entities; they
+    round-trip as their resolved characters, but the output still has
+    to be well-formed XML.
+    """
+    if "&" not in text and "<" not in text and ">" not in text:
+        return text
+    return (
+        text
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
 
 
 # Attributes that XML requires to be unique per document. On continuation
