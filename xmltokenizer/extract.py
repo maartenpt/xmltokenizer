@@ -517,8 +517,14 @@ class _ScopeBuilder:
         self.records: list[Record] = []
         self.next_id = 1
         # Stack of currently-open element records-in-progress:
-        # each entry is (record_id, tag, attrs, start_offset, depth, raw_open_bytes)
-        self.stack: list[tuple[str, str, list, int, int, bytes]] = []
+        # each entry is (record_id, tag, attrs, start_offset, depth, raw_open_bytes, source_open_order)
+        self.stack: list[tuple[str, str, list, int, int, bytes, int]] = []
+        # Monotonic counter incremented at each START event (empty or
+        # non-empty). The value is recorded on the resulting Record as
+        # `source_open_order`, giving the folder a way to preserve
+        # source order between an anchor at offset X and an element
+        # opening at the same offset X.
+        self.source_open_counter = 0
         # Raw bytes of each element's open tag (or self-closing tag), keyed
         # by record id. Used by fold.py to round-trip attribute whitespace
         # exactly for elements that are emitted as a single fragment.
@@ -641,6 +647,7 @@ class _ScopeBuilder:
                     self._start_join(ev)
                     return
                 # Otherwise: regular anchor record.
+                self.source_open_counter += 1
                 rid = self._new_id()
                 self.records.append(
                     Record(
@@ -653,19 +660,22 @@ class _ScopeBuilder:
                         priority=200,
                         parent=self._parent_id(),
                         depth=self._depth(),
+                        source_open_order=self.source_open_counter,
                     )
                 )
                 self.raw_empty_bytes_by_id[rid] = raw_tag_bytes
                 self.last_boundary_offset = self.fold_offset
             else:
+                self.source_open_counter += 1
                 rid = self._new_id()
                 self.stack.append(
-                    (rid, tag, attrs_list, self.fold_offset, self._depth(), raw_tag_bytes)
+                    (rid, tag, attrs_list, self.fold_offset, self._depth(),
+                     raw_tag_bytes, self.source_open_counter)
                 )
                 self.raw_open_bytes_by_id[rid] = raw_tag_bytes
                 self.last_boundary_offset = self.fold_offset
         elif ev.kind == "end":
-            rid, tag, attrs_list, start_off, depth, _raw_open = self.stack.pop()
+            rid, tag, attrs_list, start_off, depth, _raw_open, soo = self.stack.pop()
             # Default xml-element priority is 100. Override down to 30
             # for tags configured to nest INSIDE a coincident <tok>; the
             # rebalance's (start, -priority, seq) sort then naturally
@@ -684,6 +694,7 @@ class _ScopeBuilder:
                     priority=elem_priority,
                     parent=self.stack[-1][0] if self.stack else None,
                     depth=depth,
+                    source_open_order=soo,
                 )
             )
             self.last_boundary_offset = self.fold_offset

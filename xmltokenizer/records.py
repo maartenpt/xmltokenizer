@@ -68,6 +68,15 @@ class Record:
     # --- verbatim-only ---
     raw_xml: Optional[str] = None
 
+    # --- source-order tie-breaker (populated by extract) ---
+    # Monotonic counter incremented on every start event in the source
+    # XML (both empty elements and non-empty opens). Used by the folder
+    # to decide whether an anchor at the same offset as an element open
+    # should fire before or after it — preserving the original source
+    # order between source-XML constructs without depending on the more
+    # fragile element-close ordering that `Layer.records` uses.
+    source_open_order: Optional[int] = None
+
     def __post_init__(self) -> None:
         if self.kind == "element":
             if self.start is None or self.end is None:
@@ -128,6 +137,7 @@ _DEFAULTS_TO_DROP = {
     "join_prefix_strip": "",
     "join_prefix_whitespace": "",
     "raw_xml": None,
+    "source_open_order": None,
 }
 
 

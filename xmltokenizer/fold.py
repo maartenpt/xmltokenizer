@@ -206,24 +206,33 @@ def fold_scope(root: ScopeRoot, profile: Optional[dict] = None) -> str:
         while len(current_stack) > lcp:
             closed = current_stack.pop()
             out.append(_format_close(closed))
-        # Opens-phase. Drift-outside anchors fire just BEFORE the first
-        # INSERTED open (i.e. anything not from the xml layer — `<tok>`,
-        # `<s>`, future `<name>` etc.). This way the anchor lands INSIDE
-        # any source-XML wrapper that's opening at the same offset
-        # (preserving the original `<p><lb/>...` order) but OUTSIDE the
-        # tokenization wrappers we're adding. Wrap_inside deferreds fire
-        # AFTER their target opens.
-        drift_outside_fired = False
+        # Opens-phase. Each drift-outside anchor fires JUST BEFORE the
+        # first element it should land outside of. Two rules combine:
+        #   - Always before any INSERTED (non-xml-layer) open — so the
+        #     anchor sits outside `<tok>`, `<s>`, etc.
+        #   - For source-XML opens at the same offset, interleave by
+        #     `source_open_order`: an anchor with a smaller
+        #     source_open_order fires BEFORE the source-XML element
+        #     (preserves the source `<lb/><p>...` order); a larger
+        #     source_open_order fires AFTER (preserves `<p><lb/>...`).
+        drift_outside.sort(key=lambda r: r.source_open_order or 0)
+        drift_iter = iter(drift_outside)
+        next_drift = next(drift_iter, None)
+
+        def _drift_should_fire_before(elem: Record) -> bool:
+            if next_drift is None:
+                return False
+            if elem.layer != "xml":
+                return True
+            if next_drift.source_open_order is None or elem.source_open_order is None:
+                return False
+            return next_drift.source_open_order < elem.source_open_order
+
         for i in range(lcp, len(desired)):
             rec = desired[i]
-            if (
-                rec.layer != "xml"
-                and drift_outside
-                and not drift_outside_fired
-            ):
-                for d in drift_outside:
-                    out.append(_format_anchor(d, root))
-                drift_outside_fired = True
+            while _drift_should_fire_before(rec):
+                out.append(_format_anchor(next_drift, root))
+                next_drift = next(drift_iter, None)
             out.append(_format_open(rec, states, root))
             states[rec.id].fragments_emitted += 1
             current_stack.append(rec)
@@ -238,13 +247,12 @@ def fold_scope(root: ScopeRoot, profile: Optional[dict] = None) -> str:
                         fired.append(d)
                 for f in fired:
                     deferred.remove(f)
-        # If we never hit an atomic in the opens, the drift_outside
-        # anchors still need to fire — they go between closes and opens
-        # (i.e. before any of the just-opened elements). Fall through
-        # to Phase 3 if any are still pending.
-        if drift_outside and not drift_outside_fired:
-            for d in drift_outside:
-                out.append(_format_anchor(d, root))
+        # Any drift anchors left after all opens — they fire here
+        # (e.g. when there are no inserted opens at the offset, they
+        # land between closes and the next plaintext chunk).
+        while next_drift is not None:
+            out.append(_format_anchor(next_drift, root))
+            next_drift = next(drift_iter, None)
 
         # Phase 3: anchors and verbatims that didn't fire during phases 1
         # or 2 — they sit inside whatever the now-current stack provides.
