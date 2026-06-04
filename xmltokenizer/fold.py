@@ -177,13 +177,21 @@ def fold_scope(root: ScopeRoot, profile: Optional[dict] = None) -> str:
                 elif rec.kind == "verbatim":
                     out.append(_format_verbatim(rec))
                 continue
+            # Drift-outside candidates: ordinary xml-layer anchors at a
+            # tok edge AND synthetic anchor-fallback records (their id
+            # ends with "--fb") — the latter REPRESENT an `<s>` and must
+            # always sit immediately before the sentence's first token,
+            # never inside it.
+            is_anchor_fallback = (
+                rec.kind == "anchor" and rec.id.endswith("--fb")
+            )
             if (
                 rec.kind == "anchor"
-                and rec.layer == "xml"
                 and atomic_opens_here
                 and rec.tag not in tok_inner_anchors
                 and not rec.wrap_inside
                 and not rec.join_group
+                and (rec.layer == "xml" or is_anchor_fallback)
             ):
                 drift_outside.append(rec)
                 continue
@@ -405,15 +413,33 @@ def _precompute_states(
             continue
 
         if rec.policy == "split-with-anchor-fallback":
-            # Fall back to an anchor: never split this element.
+            # Sentences NEVER split — demote to a single empty anchor at
+            # the sentence's start offset. The fold's drift-outside path
+            # then ensures the anchor fires immediately BEFORE the first
+            # token of the sentence.
             states[rec.id].use_anchor_fallback = True
+            # Build @corresp listing the xml:ids of every atomic token
+            # in this sentence's range. The user requirement: a phantom
+            # `<s/>` must always identify which tokens it heads.
+            tok_refs: list[str] = []
+            for other in all_elements:
+                if other.policy != "atomic":
+                    continue
+                if other.start < rec.start or other.end > rec.end:
+                    continue
+                xml_id = other.attrs.get("xml:id")
+                if xml_id:
+                    tok_refs.append(f"#{xml_id}")
+            fb_attrs = dict(rec.attrs)
+            if tok_refs:
+                fb_attrs["corresp"] = " ".join(tok_refs)
             anchor_fallbacks.append(
                 Record(
                     kind="anchor",
                     layer=rec.layer,
                     id=f"{rec.id}--fb",
                     tag=rec.tag,
-                    attrs=dict(rec.attrs),
+                    attrs=fb_attrs,
                     offset=rec.start,
                     priority=rec.priority,
                     parent=rec.parent,

@@ -36,8 +36,13 @@ tok_inner_elements = ["del", "supplied", "unclear", "add", "corr"]
 tok_inner_anchors = ["gap"]
 
 # `unsplittable` elements: their close becomes a hard barrier in
-# nlp_plaintext, so UDPipe cannot put a sentence across them.
-unsplittable = []
+# nlp_plaintext (so UDPipe cannot emit a sentence crossing them), AND
+# they are the only structural elements that can trigger an `<s>`
+# anchor-fallback demotion when they happen to straddle a sentence span
+# (the design says sentences never split, so when an unbreakable outer
+# ends inside a sentence the sentence is emitted as a single empty
+# `<s ... corresp="..."/>` anchor rather than as split fragments).
+unsplittable = ["p", "head", "ab"]
 
 # `barrier_elements`: their close inserts \n\n in nlp_plaintext (so
 # sentences don't span them) but they remain structurally splittable.
