@@ -554,6 +554,7 @@ class _ScopeBuilder:
         self.break_bearers: set[str] = set(ba.get("bearers", []))
         self.break_no_value: str = ba.get("no_value", "no")
         self.break_default_value: str = ba.get("default_value", "yes")
+        self.default_break: str = profile.get("default_break", "yes")
         self.truncation_strip_chars: tuple[str, ...] = tuple(
             profile.get("truncation_strip_chars", [])
         )
@@ -774,9 +775,26 @@ class _ScopeBuilder:
         break_val = attrs.get("break")
         if break_val == self.break_no_value:
             return True
-        # Heuristic / default-break-no: not implemented for v1 — TEI default
-        # is "yes" and we require explicit `break="no"` to trigger.
+        if break_val == self.break_default_value:
+            return False
+        if break_val is not None:
+            return False
+        # No @break attribute — apply profile default_break (§5.5.6).
+        if self.default_break == "no":
+            return True
+        if self.default_break == "heuristic":
+            return self._has_truncation_char_before_break()
         return False
+
+    def _has_truncation_char_before_break(self) -> bool:
+        """True if fold plaintext ends with a truncation marker (§5.5.6)."""
+        if not self.truncation_strip_chars:
+            return False
+        text = "".join(self.fold_plaintext_parts)
+        boundary = self.last_boundary_offset
+        while len(text) > boundary and text[-1].isspace():
+            text = text[:-1]
+        return len(text) > boundary and text[-1] in self.truncation_strip_chars
 
     def _strip_hyphen_and_trailing_ws(self) -> tuple[str, str]:
         """Pop the trailing whitespace and (if present) a final hyphen-like

@@ -116,6 +116,7 @@ def flexipipe_backend(
     *,
     command: str = "flexipipe",
     tasks: str = "tokenize,tag,parse",
+    language: Optional[str] = None,
     extra_args: tuple[str, ...] = (),
     timeout_seconds: Optional[float] = None,
     max_chunk_chars: int = 0,
@@ -129,8 +130,14 @@ def flexipipe_backend(
     The expectation is that flexipipe reads plaintext on stdin and emits
     CoNLL-U on stdout. If your flexipipe build uses different I/O, fall
     back to constructing ``ExternalCommandBackend`` manually.
+
+  `language` is passed as ``--language=…`` when set. Flexipipe requires
+    this for raw plaintext input (no ``# language =`` header on stdin).
     """
-    argv = [command, f"--tasks={tasks}", *extra_args]
+    argv = [command, f"--tasks={tasks}"]
+    if language:
+        argv.append(f"--language={language}")
+    argv.extend(extra_args)
     return ExternalCommandBackend(
         argv=argv,
         max_chunk_chars=max_chunk_chars,

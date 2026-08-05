@@ -89,9 +89,11 @@ def _collect_insertions(
         elif rec.kind == "anchor":
             assert rec.offset is not None
             if rec.tag in break_bearers:
-                # `lb`/`cb`/`pb` with `break="no"` was already consumed
-                # by the join scanner and arrives here only when it
-                # actually breaks a token.
+                # Join participants (explicit `break="no"` or heuristic) must
+                # not insert a token barrier — the join scanner already
+                # collapsed the word for NLP.
+                if rec.join_group:
+                    continue
                 break_val = rec.attrs.get("break")
                 if break_val != break_no_value:
                     add(rec.offset, " ")

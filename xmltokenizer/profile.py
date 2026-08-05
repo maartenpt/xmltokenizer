@@ -40,6 +40,11 @@ DEFAULTS: dict = {
         "default_value": "yes",
         "no_value": "no",
     },
+    # When a break-bearing anchor has no @break attribute: "yes" (TEI
+    # default — token break), "no" (always join), or "heuristic" (join
+    # only if preceded by a truncation_strip_chars character). See
+    # dev/01-design.md §5.5.1 / §5.5.6.
+    "default_break": "yes",
     "truncation_strip_chars": [],
     # Elements whose hyphen-like content is "absorbed" into a truncation
     # join. The element + its content are stripped from fold_plaintext
@@ -114,6 +119,145 @@ def _resolve_profile_path(name_or_path: str) -> Path:
             p = Path.cwd() / p
         return p
     return BUILTIN_DIR / f"{name_or_path}.toml"
+
+
+VALID_DEFAULT_BREAK = frozenset({"yes", "no", "heuristic"})
+
+
+def parse_truncation_strip_chars(value: str) -> list[str]:
+    """Parse a comma-separated list of truncation marker characters."""
+    return [part for part in (p.strip() for p in value.split(",")) if part]
+
+
+def apply_profile_overrides(profile: dict, **overrides) -> dict:
+    """Apply optional caller/CLI overrides in-place. Returns ``profile``."""
+    if (default_break := overrides.get("default_break")) is not None:
+        if default_break not in VALID_DEFAULT_BREAK:
+            raise ValueError(
+                f"default_break must be one of {sorted(VALID_DEFAULT_BREAK)}, "
+                f"got {default_break!r}"
+            )
+        profile["default_break"] = default_break
+    if (strip_chars := overrides.get("truncation_strip_chars")) is not None:
+        profile["truncation_strip_chars"] = list(strip_chars)
+    return profile
+
+
+def parse_profile_option(spec: str) -> tuple[list[str], str]:
+    """Parse ``KEY=VALUE`` or ``nested.key=VALUE`` into path + raw value."""
+    if "=" not in spec:
+        raise ValueError(f"profile option must be KEY=VALUE, got {spec!r}")
+    key, value = spec.split("=", 1)
+    key = key.strip()
+    value = value.strip()
+    if not key:
+        raise ValueError(f"profile option has empty key: {spec!r}")
+    return [part for part in key.split(".") if part], value
+
+
+def _defaults_type(key_path: list[str]) -> str | None:
+    """Return a coarse type tag for a dotted path in DEFAULTS."""
+    node: object = DEFAULTS
+    for part in key_path:
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    if isinstance(node, list):
+        return "list"
+    if isinstance(node, bool):
+        return "bool"
+    if isinstance(node, int):
+        return "int"
+    if isinstance(node, dict):
+        return "dict"
+    return "str"
+
+
+def _coerce_bool(raw: str) -> bool:
+    low = raw.lower()
+    if low in {"1", "true", "yes", "on"}:
+        return True
+    if low in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"expected a boolean, got {raw!r}")
+
+
+def _coerce_list(raw: str) -> list[str]:
+    if "," in raw:
+        return parse_truncation_strip_chars(raw)
+    return [raw] if raw else []
+
+
+def coerce_profile_value(key_path: list[str], raw: str) -> object:
+    """Coerce a CLI string to the type implied by DEFAULTS."""
+    if key_path[-1] == "default_break":
+        if raw not in VALID_DEFAULT_BREAK:
+            raise ValueError(
+                f"default_break must be one of {sorted(VALID_DEFAULT_BREAK)}, "
+                f"got {raw!r}"
+            )
+        return raw
+    kind = _defaults_type(key_path)
+    if kind == "list":
+        return _coerce_list(raw)
+    if kind == "bool":
+        return _coerce_bool(raw)
+    if kind == "int":
+        return int(raw)
+    return raw
+
+
+def _get_profile_node(profile: dict, key_path: list[str]) -> object:
+    node: object = profile
+    for part in key_path:
+        if not isinstance(node, dict) or part not in node:
+            raise ValueError(
+                f"unknown profile key {'.'.join(key_path)!r}"
+            )
+        node = node[part]
+    return node
+
+
+def _set_profile_node(profile: dict, key_path: list[str], value: object) -> None:
+    node = profile
+    for part in key_path[:-1]:
+        if part not in node or not isinstance(node[part], dict):
+            raise ValueError(
+                f"unknown profile key {'.'.join(key_path)!r}"
+            )
+        node = node[part]
+    leaf = key_path[-1]
+    if leaf not in node:
+        raise ValueError(
+            f"unknown profile key {'.'.join(key_path)!r}"
+        )
+    node[leaf] = value
+
+
+def apply_profile_options(profile: dict, options: list[str]) -> dict:
+    """Apply ``KEY=VALUE`` overrides (repeatable on the CLI).
+
+    Keys use dot notation for nested profile dicts
+    (e.g. ``break_attribute.no_value=no``). List-typed keys accept a
+    single value or a comma-separated list. Append to a list with the
+    ``_add`` suffix (e.g. ``truncation_strip_chars_add=¬``).
+    """
+    for spec in options:
+        key_path, raw = parse_profile_option(spec)
+        leaf = key_path[-1]
+        if leaf.endswith("_add"):
+            base_path = key_path[:-1] + [leaf[:-4]]
+            existing = _get_profile_node(profile, base_path)
+            if not isinstance(existing, list):
+                raise ValueError(
+                    f"profile key {'.'.join(base_path)!r} is not a list"
+                )
+            existing.extend(_coerce_list(raw))
+        else:
+            _set_profile_node(
+                profile, key_path, coerce_profile_value(key_path, raw)
+            )
+    return profile
 
 
 def merge(parent: dict, child: dict) -> dict:

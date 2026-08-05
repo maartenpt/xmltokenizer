@@ -17,6 +17,7 @@ Subcommands:
                        [--backend-cmd 'EXEC ARG1 ARG2 ...']
                        [--model PATH]
                        [--profile tei]
+                       [-O KEY=VALUE ...]
                        [--restore-xmlns]
         End-to-end. Default backend: naive (pure-Python; works with no
         external tool installed). Use --backend flexipipe or
@@ -28,11 +29,18 @@ Run `python -m xmltokenizer <subcommand> --help` for full options.
 from __future__ import annotations
 
 import argparse
+import os
 import shlex
 import sys
 from pathlib import Path
 
-from . import attach_conllu, extract, fold, load_profile
+from . import attach_conllu, extract, fold
+from .profile import (
+    apply_profile_options,
+    apply_profile_overrides,
+    load_profile,
+    parse_truncation_strip_chars,
+)
 from .backends import (
     BackendError,
     ExternalCommandBackend,
@@ -47,6 +55,60 @@ from .validate import ValidationError, run as validate_run
 
 
 # ---------------------------------------------------------------------
+# Profile loading
+# ---------------------------------------------------------------------
+
+
+def _load_profile_from_args(args: argparse.Namespace) -> dict:
+    profile = load_profile(args.profile)
+    if getattr(args, "option", None):
+        apply_profile_options(profile, args.option)
+    overrides: dict = {}
+    if args.default_break is not None:
+        overrides["default_break"] = args.default_break
+    if args.truncation_strip_chars is not None:
+        overrides["truncation_strip_chars"] = parse_truncation_strip_chars(
+            args.truncation_strip_chars
+        )
+    return apply_profile_overrides(profile, **overrides)
+
+
+def _add_profile_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--profile", default="tei")
+    parser.add_argument(
+        "--default-break",
+        choices=["yes", "no", "heuristic"],
+        default=None,
+        help=(
+            "When <lb>/<cb>/<pb> has no @break: yes=token break (TEI "
+            "default), no=always join, heuristic=join only if preceded by "
+            "a truncation marker (see --truncation-strip-chars)."
+        ),
+    )
+    parser.add_argument(
+        "--truncation-strip-chars",
+        default=None,
+        metavar="CHARS",
+        help=(
+            "Comma-separated truncation markers for heuristic joins and "
+            "hyphen stripping (default: profile value, usually \"-,\\u00ad\")."
+        ),
+    )
+    parser.add_argument(
+        "-O",
+        "--option",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help=(
+            "Override a profile setting (repeatable). Examples: "
+            "default_break=heuristic, truncation_strip_chars=-,¬, "
+            "truncation_strip_chars_add=¬, barrier_around_verbatim=false."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------
 # Subcommand: extract
 # ---------------------------------------------------------------------
 
@@ -54,7 +116,7 @@ from .validate import ValidationError, run as validate_run
 def cmd_extract(args: argparse.Namespace) -> int:
     raw = Path(args.input).read_bytes()
     raw_de, _ = deactivate(raw)
-    profile = load_profile(args.profile)
+    profile = _load_profile_from_args(args)
     metadata = extract(raw_de, profile, source_path=args.input)
 
     # Write plaintext (concatenated across scope roots, separated by a
@@ -86,7 +148,7 @@ def cmd_extract(args: argparse.Namespace) -> int:
 def cmd_fold(args: argparse.Namespace) -> int:
     raw = Path(args.input).read_bytes()
     raw_de, ns_transform = deactivate(raw)
-    profile = load_profile(args.profile)
+    profile = _load_profile_from_args(args)
     metadata = extract(raw_de, profile, source_path=args.input)
 
     conllu_text = Path(args.conllu).read_text(encoding="utf-8")
@@ -126,7 +188,7 @@ def cmd_tokenize(args: argparse.Namespace) -> int:
     raw = Path(args.input).read_bytes()
     # Build the pipeline ourselves so we can hand the metadata to the
     # validator. Mirrors xmltokenizer.orchestrator.run.
-    profile = load_profile(args.profile)
+    profile = _load_profile_from_args(args)
     raw_de, ns_transform = deactivate(raw)
     metadata = extract(raw_de, profile, source_path=args.input)
     from . import build_nlp_plaintext as _build_nlp
@@ -162,18 +224,38 @@ def _build_backend(args: argparse.Namespace):
     if args.backend_cmd:
         argv = shlex.split(args.backend_cmd)
         return ExternalCommandBackend(argv=argv)
-    if args.backend == "naive":
+    backend = args.backend
+    model = args.model or os.environ.get("XMLTOKENIZER_MODEL")
+    if getattr(args, "segment", False):
+        if backend not in ("naive", "udpipe1-local"):
+            raise SystemExit(
+                f"--segment requires UDPipe and cannot be combined with "
+                f"--backend {backend!r}"
+            )
+        backend = "udpipe1-local"
+        if not model:
+            raise SystemExit(
+                "--segment requires --model PATH (or set XMLTOKENIZER_MODEL)"
+            )
+    if backend == "naive":
         return NaiveBackend()
-    if args.backend == "flexipipe":
+    if backend == "flexipipe":
         kwargs = {}
         if args.flexipipe_tasks:
             kwargs["tasks"] = args.flexipipe_tasks
+        language = args.language or os.environ.get("XMLTOKENIZER_LANGUAGE")
+        if not language:
+            raise SystemExit(
+                "--language CODE is required when --backend=flexipipe "
+                "(e.g. --language es). Or set XMLTOKENIZER_LANGUAGE."
+            )
+        kwargs["language"] = language
         return flexipipe_backend(**kwargs)
-    if args.backend == "udpipe1-local":
-        if not args.model:
+    if backend == "udpipe1-local":
+        if not model:
             raise SystemExit("--model is required when --backend=udpipe1-local")
-        return udpipe1_backend(args.model)
-    raise SystemExit(f"unknown backend: {args.backend!r}")
+        return udpipe1_backend(model)
+    raise SystemExit(f"unknown backend: {backend!r}")
 
 
 # ---------------------------------------------------------------------
@@ -194,7 +276,7 @@ def build_parser() -> argparse.ArgumentParser:
     # --- extract ---
     p_ex = sub.add_parser("extract", help="Run Phase A: emit plaintext + standoff.")
     p_ex.add_argument("input")
-    p_ex.add_argument("--profile", default="tei")
+    _add_profile_args(p_ex)
     p_ex.add_argument("--plaintext", help="Write plaintext here (default: stdout)")
     p_ex.add_argument("--standoff", help="Write xml-layer records as JSONL")
     p_ex.set_defaults(func=cmd_extract)
@@ -206,7 +288,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_fo.add_argument("input")
     p_fo.add_argument("--conllu", required=True, help="Path to CoNLL-U file")
-    p_fo.add_argument("--profile", default="tei")
+    _add_profile_args(p_fo)
     p_fo.add_argument("--output", help="Write XML here (default: stdout)")
     p_fo.add_argument("--restore-xmlns", action="store_true")
     p_fo.set_defaults(func=cmd_fold)
@@ -214,19 +296,20 @@ def build_parser() -> argparse.ArgumentParser:
     # --- tokenize ---
     p_tok = sub.add_parser(
         "tokenize",
-        help="End-to-end: extract → backend → fold. Default backend: flexipipe.",
+        help="End-to-end: extract → backend → fold. Default backend: naive.",
     )
     p_tok.add_argument("input")
-    p_tok.add_argument("--profile", default="tei")
+    _add_profile_args(p_tok)
     p_tok.add_argument("--output", help="Write XML here (default: stdout)")
     p_tok.add_argument(
         "--backend",
         choices=["naive", "flexipipe", "udpipe1-local"],
         default="naive",
         help=(
-            "Backend name (default: naive — built-in whitespace + punctuation "
-            "tokenizer, zero deps). Use 'flexipipe' or 'udpipe1-local' for "
-            "real tagging/parsing. Ignored if --backend-cmd is given."
+            "Backend name (default: naive — whitespace tokenization only, "
+            "one <s> per structural block; no UDPipe). Use --segment or "
+            "'udpipe1-local' / 'flexipipe' for real sentence segmentation. "
+            "Ignored if --backend-cmd is given."
         ),
     )
     p_tok.add_argument(
@@ -236,10 +319,33 @@ def build_parser() -> argparse.ArgumentParser:
             "reads plaintext on stdin and writes CoNLL-U on stdout."
         ),
     )
-    p_tok.add_argument("--model", help="Model path (for udpipe1-local)")
+    p_tok.add_argument(
+        "--model",
+        help=(
+            "UDPipe model path (for --backend=udpipe1-local or --segment). "
+            "Defaults to $XMLTOKENIZER_MODEL if set."
+        ),
+    )
+    p_tok.add_argument(
+        "--segment",
+        action="store_true",
+        help=(
+            "Run UDPipe tokenization + sentence segmentation + tagging "
+            "(shorthand for --backend=udpipe1-local; requires --model)."
+        ),
+    )
     p_tok.add_argument(
         "--flexipipe-tasks",
         help="Task list passed to flexipipe (--tasks=...). Default: tokenize,tag,parse",
+    )
+    p_tok.add_argument(
+        "--language",
+        metavar="CODE",
+        help=(
+            "Language code for flexipipe (e.g. es, cs, en). Required when "
+            "using --backend=flexipipe on raw plaintext. Defaults to "
+            "$XMLTOKENIZER_LANGUAGE if set."
+        ),
     )
     p_tok.add_argument("--restore-xmlns", action="store_true")
     p_tok.add_argument(
@@ -257,9 +363,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
     try:
+        args = parser.parse_args(argv)
         return args.func(args)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
     except BackendError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
