@@ -1,0 +1,12 @@
+# TEITOK profile — TEI defaults with TEITOK id conventions.
+# Extends ``tei``; only overrides id attributes to plain ``id``
+# (TEITOK corpora typically use @id, not @xml:id).
+
+extends = "tei"
+name = "teitok"
+
+[tok_attrs]
+id_attr = "id"
+
+[s_attrs]
+id_attr = "id"
