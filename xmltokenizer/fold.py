@@ -133,6 +133,14 @@ def fold_scope(root: ScopeRoot, profile: Optional[dict] = None) -> str:
         atomic_closes_here = [
             r for r in closes_at.get(offset, []) if r.policy == "atomic"
         ]
+        # Source-XML elements opening here (e.g. <p> at the same offset as
+        # a sibling <lb/>). Needed so inter-paragraph / "misplaced" anchors
+        # still interleave by source_open_order even when no <tok> starts
+        # at this offset — common when <p> begins with leading whitespace
+        # (`<lb/><p> Text` or `<lb/><p>\nText`).
+        xml_opens_here = [
+            r for r in opens_at.get(offset, []) if r.layer == "xml"
+        ]
 
         # Phase 1: anchors/verbatims that must fire INSIDE a currently
         # open element. Three reasons:
@@ -143,10 +151,11 @@ def fold_scope(root: ScopeRoot, profile: Optional[dict] = None) -> str:
         #   (c) anchor tag in `tok_inner_anchors` AND a tok is closing at
         #       this offset → the anchor lands inside the closing tok
         #       (e.g. <gap/> at tok.end).
-        # Also classify "drift-outside" anchors: when a tok OPENS at this
-        # offset and the anchor's tag is NOT in tok_inner_anchors, the
-        # anchor fires BETWEEN closes and opens (so e.g. <lb/> at tok.start
-        # sits BEFORE the <tok>, not inside it).
+        # Also classify "drift-outside" anchors: when a tok OR a source-XML
+        # element opens at this offset and the anchor's tag is NOT in
+        # tok_inner_anchors, the anchor fires BETWEEN closes and opens
+        # (so e.g. <lb/> at tok.start sits BEFORE the <tok>, and a
+        # sibling <lb/> before <p> stays outside <p>).
         deferred: list[Record] = []
         drift_outside: list[Record] = []
         for rec in point_records.get(offset, []):
@@ -178,16 +187,16 @@ def fold_scope(root: ScopeRoot, profile: Optional[dict] = None) -> str:
                     out.append(_format_verbatim(rec))
                 continue
             # Drift-outside candidates: ordinary xml-layer anchors at a
-            # tok edge AND synthetic anchor-fallback records (their id
-            # ends with "--fb") — the latter REPRESENT an `<s>` and must
-            # always sit immediately before the sentence's first token,
-            # never inside it.
+            # tok edge or source-XML open, AND synthetic anchor-fallback
+            # records (their id ends with "--fb") — the latter REPRESENT
+            # an `<s>` and must always sit immediately before the
+            # sentence's first token, never inside it.
             is_anchor_fallback = (
                 rec.kind == "anchor" and rec.id.endswith("--fb")
             )
             if (
                 rec.kind == "anchor"
-                and atomic_opens_here
+                and (atomic_opens_here or xml_opens_here)
                 and rec.tag not in tok_inner_anchors
                 and not rec.wrap_inside
                 and not rec.join_group
