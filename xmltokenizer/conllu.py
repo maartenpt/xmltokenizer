@@ -13,7 +13,7 @@ run those three steps. We separate them so each is independently testable.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional
 
 from .records import Layer, Record
@@ -232,6 +232,67 @@ _FIELD_TO_CTOK_ATTR = {
     "deps": "deps",
     "misc": "misc",
 }
+
+
+def cut_at_barriers(
+    aligned: list[AlignedToken], nlp_text: str, nlp_to_fold: Optional[list[int]]
+) -> tuple[list[AlignedToken], int]:
+    """Cut every sentence that runs across a sentence barrier.
+
+    A sentence never crosses a barrier element (`<p>`, `<head>`, ...: the
+    profile's `barrier_elements` / `unsplittable`, marked in `nlp_text` by an
+    inserted `\\n\\n`). A backend that ignores the barriers (UDPipe got the text
+    without them in the PressMint-CZ case) returns such sentences; they are cut
+    there. The parts keep the token `ord`s; the first part keeps the sentence id,
+    later parts get `<id>.2`, `<id>.3`. A head pointing into another part is
+    unknown after the cut: head and deprel become `_`.
+
+    Returns the aligned tokens (with new sentence ids) and the number of cuts.
+    """
+    if not nlp_to_fold:
+        return aligned, 0
+
+    def barrier_between(a: int, b: int) -> bool:
+        return any(
+            nlp_to_fold[i] == -1 and nlp_text[i] == "\n" for i in range(a, min(b, len(nlp_text)))
+        )
+
+    groups: dict[str, list[AlignedToken]] = {}
+    order: list[str] = []
+    for at in aligned:
+        if at.sent_id not in groups:
+            groups[at.sent_id] = []
+            order.append(at.sent_id)
+        groups[at.sent_id].append(at)
+
+    out: list[AlignedToken] = []
+    cuts = 0
+    for sid in order:
+        group = groups[sid]
+        parts: list[int] = []
+        part, prev_end = 0, None
+        for at in group:
+            if at.nlp_start < at.nlp_end:
+                if prev_end is not None and barrier_between(prev_end, at.nlp_start):
+                    part += 1
+                prev_end = at.nlp_end
+            parts.append(part)
+        if part == 0:
+            out.extend(group)
+            continue
+        cuts += part
+        part_of: dict[str, int] = {}
+        for at, pt in zip(group, parts):
+            part_of[at.ctok.id] = pt
+            for mid in at.ctok.mwt_member_ids:
+                part_of[mid] = pt
+        for at, pt in zip(group, parts):
+            ctok = at.ctok
+            if ctok.head not in ("_", "0", "") and part_of.get(ctok.head, pt) != pt:
+                ctok = replace(ctok, head="_", deprel="_")
+            new_sid = sid if pt == 0 else f"{sid}.{pt + 1}"
+            out.append(AlignedToken(new_sid, ctok, at.nlp_start, at.nlp_end))
+    return out, cuts
 
 
 def build_udpipe_layer(

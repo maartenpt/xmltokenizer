@@ -48,11 +48,14 @@ use the CLI** — they should call this library directly from Python.
 
 from .extract import AlreadyTokenizedError, Metadata, ScopeRoot, run as extract
 from .fold import run as fold
+import warnings
+
 from .conllu import (
     AlignmentError,
     CoNLLUParseError,
     align_to_plaintext,
     build_udpipe_layer,
+    cut_at_barriers as cut_sentences_at_barriers,
     parse as parse_conllu,
 )
 from .namespace import deactivate, reactivate
@@ -93,6 +96,15 @@ def attach_conllu(
         base = root.fold_plaintext
         nlp_to_fold = None
     aligned = align_to_plaintext(sentences, base)
+    if not profile.get("sentences_may_cross_barriers", False):
+        # a sentence never crosses <p> etc. unless the profile expressly allows it
+        aligned, cuts = cut_sentences_at_barriers(aligned, base, nlp_to_fold)
+        if cuts:
+            warnings.warn(
+                f"xmltokenizer: cut {cuts} sentence(s) at block barriers (<p>, ...): "
+                "the NLP input probably lost its paragraph breaks",
+                stacklevel=2,
+            )
     layer = build_udpipe_layer(
         aligned, profile, w_counter, s_counter, nlp_to_fold=nlp_to_fold
     )

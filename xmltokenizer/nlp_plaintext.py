@@ -29,7 +29,8 @@ def build(root: ScopeRoot, profile: dict) -> None:
     Two tiers of barrier are inserted (design §5.8 + Session 5 addition):
 
     **Sentence barriers (`\\n\\n`)** — prevent sentence span across:
-    - `profile.unsplittable` ∪ `profile.barrier_elements` element closes.
+    - `profile.unsplittable` ∪ `profile.barrier_elements` element opens and
+      closes.
     - The offset of every excluded verbatim record (e.g. `<note>`) when
       `profile.barrier_around_verbatim` is true.
 
@@ -45,14 +46,14 @@ def build(root: ScopeRoot, profile: dict) -> None:
     If a single offset has both a sentence and token insertion, the
     sentence barrier wins (`\\n\\n` is also a token break).
     """
-    insertions = _collect_insertions(root.xml_layer.records, profile)
+    insertions = _collect_insertions(root.xml_layer.records, profile, root.fold_plaintext)
     nlp_plaintext, nlp_to_fold = _splice(root.fold_plaintext, insertions)
     root.nlp_plaintext = nlp_plaintext
     root.nlp_to_fold = nlp_to_fold
 
 
 def _collect_insertions(
-    records: Iterable[Record], profile: dict
+    records: Iterable[Record], profile: dict, text: str = ""
 ) -> list[tuple[int, str]]:
     """Return a sorted list of `(fold_offset, text_to_insert)` records.
 
@@ -65,6 +66,13 @@ def _collect_insertions(
     token_break_element_tags: set[str] = set(
         profile.get("token_break_elements", [])
     )
+    # Elements the fold treats as structural (never crossed by a token, see
+    # fold._nest_rank) always break tokens at both edges, even when a profile
+    # drops them from the barrier lists: a token cannot be split.
+    structural_tags: set[str] = (
+        sentence_tags | token_break_element_tags
+        | set(profile.get("chunk_boundary_elements", []))
+    )
     around_verbatim = bool(profile.get("barrier_around_verbatim", False))
     break_attr = profile.get("break_attribute", {}) or {}
     break_bearers: set[str] = set(break_attr.get("bearers", []))
@@ -72,6 +80,7 @@ def _collect_insertions(
 
     # offset -> longest insertion text so far.
     by_offset: dict[int, str] = {}
+    block_starts: list[int] = []
 
     def add(offset: int, text: str) -> None:
         existing = by_offset.get(offset, "")
@@ -81,11 +90,19 @@ def _collect_insertions(
     for rec in records:
         if rec.kind == "element":
             if rec.tag in sentence_tags:
-                assert rec.end is not None
+                assert rec.start is not None and rec.end is not None
+                block_starts.append(rec.start)
                 add(rec.end, "\n\n")
             elif rec.tag in token_break_element_tags:
                 assert rec.end is not None
                 add(rec.end, " ")
+            if rec.tag in structural_tags:
+                assert rec.start is not None and rec.end is not None
+                for off in (rec.start, rec.end):
+                    # only where the text on both sides would glue together
+                    if 0 < off < len(text) and not text[off - 1].isspace() \
+                            and not text[off].isspace():
+                        add(off, " ")
         elif rec.kind == "anchor":
             assert rec.offset is not None
             if rec.tag in break_bearers:
@@ -114,6 +131,20 @@ def _collect_insertions(
             ):
                 assert rec.offset is not None
                 add(rec.offset, "\n\n")
+
+    # A sentence must not run INTO a block either (`… text <lg><l>…`, or
+    # `<hi>x</hi> <p>…` in one container): a barrier at a block's start when
+    # text precedes it since the previous barrier.
+    if block_starts and text:
+        import bisect
+
+        barriers = sorted(o for o, t in by_offset.items() if t == "\n\n")
+        for start in sorted(set(block_starts)):
+            k = bisect.bisect_right(barriers, start) - 1
+            prev = barriers[k] if k >= 0 else 0
+            if prev < start and text[prev:start].strip():
+                add(start, "\n\n")
+                bisect.insort(barriers, start)
 
     return sorted(by_offset.items())
 

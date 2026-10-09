@@ -12,7 +12,7 @@ that yet. That's step 6 of the implementation order.
 from __future__ import annotations
 
 import xml.sax.saxutils
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional
 
 from .extract import Metadata, ScopeRoot
@@ -60,10 +60,14 @@ def fold_scope(root: ScopeRoot, profile: Optional[dict] = None) -> str:
     all_records: list[Record] = []
     for layer in layers:
         all_records.extend(layer.records)
+    if profile.get("hoist_edge_whitespace", True):
+        all_records = _hoist_edge_whitespace(all_records, root.fold_plaintext, profile)
+    all_records = _collapse_zero_width(all_records, root)
+    rank = _nest_rank(all_records, profile)
     sequence: dict[str, int] = {rec.id: i for i, rec in enumerate(all_records)}
 
     # Pre-pass: split detection + anchor-fallback materialization.
-    states, anchor_fallbacks = _precompute_states(all_records)
+    states, anchor_fallbacks = _precompute_states(all_records, rank)
     if anchor_fallbacks:
         all_records = all_records + anchor_fallbacks
         for fb in anchor_fallbacks:
@@ -100,9 +104,16 @@ def fold_scope(root: ScopeRoot, profile: Optional[dict] = None) -> str:
         if rec.kind in ("anchor", "verbatim"):
             assert rec.offset is not None
             point_records.setdefault(rec.offset, []).append(rec)
-    # Sort point records at each offset by priority (DESC) then sequence.
+    # Sort point records at each offset by priority (DESC), then source order
+    # (record order is not source order: `<quote>…<ee/></quote><ee/>` listed
+    # the outer <ee/> first, which closed the <quote> before the inner one).
+    _no_order = float("inf")
     for offset, recs in point_records.items():
-        recs.sort(key=lambda r: (-r.priority, sequence[r.id]))
+        recs.sort(key=lambda r: (
+            -r.priority,
+            r.source_open_order if r.source_open_order is not None else _no_order,
+            sequence[r.id],
+        ))
 
     # Maintain the set of "active at offset+ε" element records
     # incrementally — at each offset, remove those that close here and
@@ -171,6 +182,9 @@ def fold_scope(root: ScopeRoot, profile: Optional[dict] = None) -> str:
                 and rec.kind == "anchor"
                 and rec.tag in tok_inner_anchors
                 and atomic_closes_here
+                # not when its own parent opens here: `<del><gap/>…` keeps the
+                # gap inside the <del>, not in the token closing before it
+                and not any(r.id == rec.parent for r in opens_at.get(offset, []))
             ):
                 for tok in atomic_closes_here:
                     if _find_in_stack(current_stack, tok.id) is not None:
@@ -209,8 +223,8 @@ def fold_scope(root: ScopeRoot, profile: Optional[dict] = None) -> str:
         # Phase 2: rebalance — sort the current active set in nest order
         # and reconcile with current_stack. Split into closes-phase and
         # opens-phase so the drift-outside anchors can fire between.
-        desired = sorted(
-            active, key=lambda r: (r.start, -r.priority, sequence[r.id])
+        desired = _lift_atomic(
+            sorted(active, key=lambda r: _nest_key(r, rank, sequence)), rank
         )
         # Closes-phase.
         lcp = 0
@@ -232,12 +246,27 @@ def fold_scope(root: ScopeRoot, profile: Optional[dict] = None) -> str:
         #     source_open_order fires BEFORE the source-XML element
         #     (preserves the source `<lb/><p>...` order); a larger
         #     source_open_order fires AFTER (preserves `<p><lb/>...`).
+        # Anchor-fallback `<s/>`s have no source_open_order: kept apart, they fire
+        # after the source-XML drift anchors, just before the first inserted open
+        # (in the queue they would hold back e.g. the <lb/> of `</p><lb/><p>`).
+        fallback_drift = [r for r in drift_outside if r.id.endswith("--fb")]
+        drift_outside = [r for r in drift_outside if not r.id.endswith("--fb")]
         drift_outside.sort(key=lambda r: r.source_open_order or 0)
         drift_iter = iter(drift_outside)
         next_drift = next(drift_iter, None)
 
+        opening_ids = {r.id for r in desired[lcp:]}
+
         def _drift_should_fire_before(elem: Record) -> bool:
             if next_drift is None:
+                return False
+            # an anchor whose own parent opens here waits for it, even when
+            # that puts it inside an inserted <tok> (`<add><metamark/>…`
+            # with <add> nesting inside the tok)
+            if (
+                next_drift.parent in opening_ids
+                and _find_in_stack(current_stack, next_drift.parent) is None
+            ):
                 return False
             if elem.layer != "xml":
                 return True
@@ -250,6 +279,23 @@ def fold_scope(root: ScopeRoot, profile: Optional[dict] = None) -> str:
             while _drift_should_fire_before(rec):
                 out.append(_format_anchor(next_drift, root))
                 next_drift = next(drift_iter, None)
+            if rec.layer != "xml" and fallback_drift:
+                for fb in fallback_drift:
+                    out.append(_format_anchor(fb, root))
+                fallback_drift = []
+            if rec.layer == "xml" and rec.source_open_order is not None and deferred:
+                # deferred source anchors that precede this element in the source
+                # fire before it opens (`</add><lb break="no"/><add>` must not
+                # become `</add><add><lb/>`); inserted opens before stay outside
+                earlier = [
+                    d for d in deferred
+                    if d.layer == "xml" and not d.wrap_inside
+                    and d.source_open_order is not None
+                    and d.source_open_order < rec.source_open_order
+                ]
+                for d in earlier:
+                    out.append(_format_anchor(d, root) if d.kind == "anchor" else _format_verbatim(d))
+                    deferred.remove(d)
             out.append(_format_open(rec, states, root))
             states[rec.id].fragments_emitted += 1
             current_stack.append(rec)
@@ -270,6 +316,8 @@ def fold_scope(root: ScopeRoot, profile: Optional[dict] = None) -> str:
         while next_drift is not None:
             out.append(_format_anchor(next_drift, root))
             next_drift = next(drift_iter, None)
+        for fb in fallback_drift:
+            out.append(_format_anchor(fb, root))
 
         # Phase 3: anchors and verbatims that didn't fire during phases 1
         # or 2 — they sit inside whatever the now-current stack provides.
@@ -320,6 +368,7 @@ class _ElementState:
 
 def _precompute_states(
     records: list[Record],
+    rank: Optional[dict[str, tuple[int, int]]] = None,
 ) -> tuple[dict[str, _ElementState], list[Record]]:
     """Determine which element records will be split, assign cont ids,
     and generate phantom anchor records for `split-with-anchor-fallback`
@@ -360,10 +409,14 @@ def _precompute_states(
     # each E only checks elements that could plausibly be outer.
     seq_for: dict[str, int] = {rec.id: i for i, rec in enumerate(all_elements)}
 
+    rank = rank if rank is not None else {}
+
     def _sort_key(rec: Record) -> tuple:
-        return (rec.start, -rec.priority, seq_for[rec.id])
+        return _nest_key(rec, rank, seq_for)
 
     by_start = sorted(all_elements, key=lambda r: r.start)
+    atomic_by_start = [r for r in by_start if r.policy == "atomic"]
+    atomic_starts = [r.start for r in atomic_by_start]
     starts = [r.start for r in by_start]
 
     # Pre-compute `has_inner_xml` for every element record. We look at
@@ -418,6 +471,13 @@ def _precompute_states(
                 continue
             would_split = True
             break
+        if not would_split and rec.layer == "xml" and rank.get(rec.id, (0, 0))[0] == 0:
+            # an atomic element (tok) crossing this one's end is lifted
+            # outside it (`_lift_atomic`): this one splits, not the tok
+            k = bisect.bisect_left(atomic_starts, e_end) - 1
+            if k >= 0:
+                a = atomic_by_start[k]
+                would_split = e_start < a.start < e_end < a.end
         if not would_split:
             continue
 
@@ -436,7 +496,8 @@ def _precompute_states(
                     continue
                 if other.start < rec.start or other.end > rec.end:
                     continue
-                xml_id = other.attrs.get("xml:id")
+                # tei profile: @xml:id; teitok profile: @id
+                xml_id = other.attrs.get("xml:id") or other.attrs.get("id")
                 if xml_id:
                     tok_refs.append(f"#{xml_id}")
             fb_attrs = dict(rec.attrs)
@@ -524,6 +585,197 @@ def _rebalance(
     """Reconcile `current` (mutated) to match `desired` by closing inside-
     out, then opening outside-in. Emits to `out`."""
     _rebalance_with_wrap_inside(current, desired, [], out, states, root, sequence)
+
+
+def _structural_tags(profile: dict) -> set[str]:
+    """Block-like elements: never wrapped or crossed by inserted elements."""
+    tags: set[str] = set()
+    for key in ("barrier_elements", "unsplittable", "token_break_elements",
+                "chunk_boundary_elements"):
+        tags.update(profile.get(key, []) or [])
+    return tags
+
+
+def _hoist_edge_whitespace(records: list[Record], text: str, profile: dict) -> list[Record]:
+    """Move leading/trailing whitespace of inline source elements just outside
+    them (`<hi> word </hi>` → ` <hi>word</hi> `), on copies of the records.
+
+    Whitespace at an element edge has no effect for inline markup, but it makes
+    the element cross a token or sentence edge and so split for nothing; between
+    elements it is where it belongs. Not for structural elements, elements under
+    xml:space="preserve", whitespace-only elements, containers of structural
+    elements (`<table>` around `<cell>`s keeps its layout), or past a child
+    element or anchor (which would then end up outside)."""
+    structural = _structural_tags(profile)
+    by_id = {r.id: r for r in records}
+    containers: set[str] = set()
+    for r in records:
+        if r.kind == "element" and r.layer == "xml" and r.tag in structural:
+            pid = r.parent
+            while pid is not None and pid not in containers:
+                containers.add(pid)
+                pid = by_id[pid].parent if pid in by_id else None
+    children: dict[str, list[Record]] = {}
+    for r in records:
+        if r.parent is not None:
+            children.setdefault(r.parent, []).append(r)
+
+    def preserved(rec: Record) -> bool:
+        cur: Optional[Record] = rec
+        while cur is not None:
+            sp = cur.attrs.get("xml:space")
+            if sp is not None:
+                return sp == "preserve"
+            cur = by_id.get(cur.parent) if cur.parent else None
+        return False
+
+    # innermost first, so a parent sees its children's new edges and the
+    # whitespace moves out through every level (`<seg> <hi> x` → `  <seg><hi>x`)
+    span: dict[str, tuple[int, int]] = {}
+    for rec in sorted((r for r in records if r.kind == "element"), key=lambda r: -r.depth):
+        start, end = rec.start, rec.end
+        if (rec.layer == "xml" and rec.tag not in structural and rec.id not in containers
+                and start < end and text[start:end].strip() and not preserved(rec)):
+            lo_limit, hi_limit = end, start
+            for c in children.get(rec.id, []):
+                if c.kind == "element":
+                    cs, ce = span.get(c.id, (c.start, c.end))
+                else:
+                    cs = ce = c.offset
+                lo_limit, hi_limit = min(lo_limit, cs), max(hi_limit, ce)
+            while start < end and start < lo_limit and text[start].isspace():
+                start += 1
+            while end > start and end > hi_limit and text[end - 1].isspace():
+                end -= 1
+        span[rec.id] = (start, end)
+
+    return [
+        replace(r, start=span[r.id][0], end=span[r.id][1])
+        if r.kind == "element" and span[r.id] != (r.start, r.end) else r
+        for r in records
+    ]
+
+
+def _nest_rank(records: list[Record], profile: dict) -> dict[str, tuple[int, int]]:
+    """Per element id: (tier, priority) for `_nest_key`.
+
+    tier 1: structural source elements (the profile's barrier, unsplittable,
+    token-break and chunk-boundary elements), which nothing inserted may wrap;
+    tier 0: everything else. Source elements starting at the same offset are
+    nested in source order (later opened = inside): an outer one takes the
+    highest tier and priority of those inside it, so neither tier nor priority
+    can reorder source elements among themselves (`<del><subst>` stayed
+    `<del><subst>`, `<add><metamark>` stayed `<add><metamark>`)."""
+    structural = _structural_tags(profile)
+    rank: dict[str, tuple[int, int]] = {}
+    groups: dict[int, list[Record]] = {}
+    for rec in records:
+        if rec.kind != "element":
+            continue
+        tier = 1 if rec.layer == "xml" and rec.tag in structural else 0
+        rank[rec.id] = (tier, rec.priority)
+        if rec.layer == "xml":
+            groups.setdefault(rec.start, []).append(rec)
+    for recs in groups.values():
+        if len(recs) < 2:
+            continue
+        recs.sort(key=lambda r: r.source_open_order or 0)
+        best = (0, 0)
+        for rec in reversed(recs):  # innermost first
+            t, pr = rank[rec.id]
+            best = (max(best[0], t), max(best[1], pr))
+            rank[rec.id] = best
+    return rank
+
+
+def _lift_atomic(desired: list[Record], rank: dict[str, tuple[int, int]]) -> list[Record]:
+    """Atomic elements (tok) are not split for an inline source element that
+    starts before them and ends inside them: the tok moves outside it, so the
+    source element splits instead (`<hi>long phrase wo</hi>rd` →
+    `<hi>long phrase </hi><tok><hi>wo</hi>rd</tok>`, not a split tok).
+    Structural (tier 1) elements are never crossed."""
+    out = list(desired)
+    for a in [r for r in desired if r.policy == "atomic"]:
+        i = out.index(a)
+        j = i
+        while j > 0:
+            e = out[j - 1]
+            if (e.layer == "xml" and e.policy != "atomic"
+                    and rank.get(e.id, (0, 0))[0] == 0 and e.end < a.end):
+                j -= 1
+            else:
+                break
+        if j < i:
+            out.insert(j, out.pop(i))
+    return out
+
+
+def _nest_key(rec: Record, rank: dict[str, tuple[int, int]], seq: dict[str, int]) -> tuple:
+    """Nest order of elements open together (outermost first).
+
+    Earlier start is outer; at the same start a structural element is outer,
+    then the LONGER element is outer (so it wraps instead of being split: a
+    <del> over two words wraps both <tok>s), and only for equal spans does
+    priority decide (a one-word <del> goes inside its <tok>, a <hi> outside)."""
+    tier, pr = rank.get(rec.id, (0, rec.priority))
+    return (rec.start, -tier, -rec.end, -pr, seq[rec.id])
+
+
+def _collapse_zero_width(records: list[Record], root: ScopeRoot) -> list[Record]:
+    """Replace each outermost zero-width element (no text in fold_plaintext, e.g.
+    `<add><del><gap/></del></add>` or `<seg><ee/></seg>`) and everything inside it
+    by one anchor at its offset that carries the subtree's markup in `raw_xml`.
+
+    The active-set rebalance only sees elements open at offset+ε, which a
+    zero-width element never is; as an anchor it follows the anchor rules (e.g.
+    drifts outside a `<tok>` opening at the same offset)."""
+    zero = {r.id for r in records if r.kind == "element" and r.start == r.end}
+    if not zero:
+        return records
+    by_id = {r.id: r for r in records}
+
+    def outermost_zero(rec: Record) -> Optional[str]:
+        top = rec.id if rec.id in zero else None
+        pid = rec.parent
+        while pid is not None and pid in by_id:
+            if pid in zero:
+                top = pid
+            pid = by_id[pid].parent
+        return top
+
+    children: dict[str, list[Record]] = {}
+    tops: dict[str, Record] = {}
+    kept: list[Record] = []
+    for rec in records:
+        top = outermost_zero(rec)
+        if top is None:
+            kept.append(rec)
+            continue
+        if rec.id == top:
+            tops[top] = rec
+            kept.append(rec)  # placeholder, replaced below (keeps its order)
+        elif rec.parent is not None:
+            children.setdefault(rec.parent, []).append(rec)
+
+    def render(elem: Record) -> str:
+        raw_open = root.raw_open_bytes_by_id.get(elem.id)
+        parts = [raw_open.decode("utf-8") if raw_open is not None
+                 else f"<{elem.tag}{_format_attrs(elem.attrs)}>"]
+        for child in sorted(children.get(elem.id, []), key=lambda r: r.source_open_order or 0):
+            if child.kind == "element":
+                parts.append(render(child))
+            elif child.kind == "anchor":
+                parts.append(_format_anchor(child, root))
+            else:
+                parts.append(_format_verbatim(child))
+        parts.append(f"</{elem.tag}>")
+        return "".join(parts)
+
+    return [
+        replace(rec, kind="anchor", start=None, end=None, offset=rec.start, raw_xml=render(rec))
+        if rec.id in tops else rec
+        for rec in kept
+    ]
 
 
 def _format_verbatim(rec: Record) -> str:
@@ -699,7 +951,9 @@ def _format_anchor(rec: Record, root: ScopeRoot) -> str:
         return f"<?{body}?>"
     # Body of the anchor — prefer raw bytes from the source if captured.
     raw = root.raw_empty_bytes_by_id.get(rec.id)
-    if raw is not None:
+    if rec.raw_xml is not None:  # a collapsed zero-width element
+        body = rec.raw_xml
+    elif raw is not None:
         body = raw.decode("utf-8")
     else:
         body = f"<{rec.tag}{_format_attrs(rec.attrs)}/>"

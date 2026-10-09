@@ -712,6 +712,7 @@ class _ScopeBuilder:
                     priority=200,
                     parent=self._parent_id(),
                     depth=self._depth(),
+                    source_open_order=self._next_open_order(),
                 )
             )
         elif ev.kind == "pi":
@@ -728,6 +729,7 @@ class _ScopeBuilder:
                     priority=200,
                     parent=self._parent_id(),
                     depth=self._depth(),
+                    source_open_order=self._next_open_order(),
                 )
             )
         else:  # pragma: no cover
@@ -761,6 +763,7 @@ class _ScopeBuilder:
                 parent=parent_id,
                 depth=self._depth(),
                 wrap_inside=parent_id,
+                source_open_order=self._next_open_order(),
             )
         )
         self.last_boundary_offset = self.fold_offset
@@ -910,6 +913,7 @@ class _ScopeBuilder:
                     priority=200,
                     parent=parent_id,
                     depth=depth,
+                    source_open_order=self._next_open_order(),
                     join_group=self.current_join_id,
                     join_position=0,
                     join_prefix_strip=prefix_strip,
@@ -938,6 +942,7 @@ class _ScopeBuilder:
             depth=depth,
             join_group=self.current_join_id,
             join_position=self.position_in_join,
+            source_open_order=self._next_open_order(),
             join_prefix_strip=prefix_strip,
             join_prefix_whitespace=prefix_ws,
         )
@@ -945,6 +950,11 @@ class _ScopeBuilder:
         self.raw_empty_bytes_by_id[rid] = raw_tag_bytes
         self.last_join_record_idx = len(self.records) - 1
         self.position_in_join += 1
+
+    def _next_open_order(self) -> int:
+        """Count a start-like source event (see Record.source_open_order)."""
+        self.source_open_counter += 1
+        return self.source_open_counter
 
     def _add_join_anchor(self, ev: "_Event") -> None:
         """Add a non-trigger empty element as the next join participant."""
@@ -969,6 +979,7 @@ class _ScopeBuilder:
             depth=self._depth(),
             join_group=self.current_join_id,
             join_position=self.position_in_join,
+            source_open_order=self._next_open_order(),
         )
         self.records.append(rec)
         self.raw_empty_bytes_by_id[rid] = raw_tag_bytes
