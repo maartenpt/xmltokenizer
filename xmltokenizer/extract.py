@@ -296,6 +296,8 @@ def _build_scope_tag_matcher(profile: dict) -> "callable":
 
 
 _TOKENIZED_TAGS = frozenset({"tok", "s", "dtok"})
+# TEI's own token element: a document carrying it is tokenized; never retokenized
+_TEI_TOKEN_TAGS = frozenset({"w"})
 
 
 def _refuse_if_already_tokenized(
@@ -305,6 +307,14 @@ def _refuse_if_already_tokenized(
     element is found inside any scope root."""
     for s_idx, e_idx in scope_spans:
         for ev in events[s_idx + 1 : e_idx]:
+            if ev.kind == "start" and ev.data[0] in _TEI_TOKEN_TAGS:
+                raise AlreadyTokenizedError(
+                    f"{source_path}: input is already tokenized in TEI style "
+                    f"(<{ev.data[0]}> at byte {ev.byte_start}). xmltokenizer does not "
+                    f"tokenize on top of an existing tokenization, and stripping "
+                    f"<{ev.data[0]}> would discard it. Convert the TEI tokens to the "
+                    f"target token format instead of retokenizing."
+                )
             if ev.kind == "start" and ev.data[0] in _TOKENIZED_TAGS:
                 tag = ev.data[0]
                 raise AlreadyTokenizedError(
@@ -312,7 +322,9 @@ def _refuse_if_already_tokenized(
                     f"at byte {ev.byte_start} inside the tokenization scope. "
                     f"xmltokenizer is not idempotent. Detokenize first "
                     f"(strip existing <tok>/<s>/<dtok> wrappers, keeping "
-                    f"their inner content) before re-running."
+                    f"their inner content) before re-running: "
+                    f"`xmltokenize detokenize FILE --output OUT` keeps a TSV "
+                    f"record of what it strips."
                 )
 
 

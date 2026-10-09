@@ -65,6 +65,18 @@ xmltokenize tokenize file.xml --output tokenized.xml
 
 Default backend is `naive`: pure-Python whitespace + punctuation tokenization. No external tool needed, no install beyond `pip install xmltokenizer`. The morphology fields are left as `_` (CoNLL-U "unset"), but the XML structure is correct.
 
+## Detokenizing
+
+xmltokenizer refuses input that is already tokenized. To retokenize such a file, strip the existing tokenization first:
+
+```sh
+xmltokenize detokenize tokenized.xml --output plain.xml --tsv plain.tokens.tsv
+```
+
+This removes `<tok>`, `<dtok>` and `<s>` inside `<text>` (`--tags`, `--scope`), keeping their content, and merges elements that the tokenization had split into fragments (`@rpt`/`@cont`) back into one. All other bytes stay as they were. The TSV keeps a record of everything removed: one row per sentence, token and sub-token, with its id, enclosing sentence and token, character offsets into the text of the scope, its text, and every attribute it carried.
+
+TEI `<w>` tokens are never stripped: a TEI tokenization is converted, not discarded, and `tokenize` refuses files that contain it.
+
 ## Install
 
 xmltokenizer is not on PyPI (yet). Install directly from the git repo:

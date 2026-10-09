@@ -113,6 +113,38 @@ def _add_profile_args(parser: argparse.ArgumentParser) -> None:
 # ---------------------------------------------------------------------
 
 
+def cmd_detokenize(args: argparse.Namespace) -> int:
+    from .detokenize import detokenize, rows_to_tsv
+
+    src = Path(args.input)
+    out_path = Path(args.output) if args.output else None
+    tsv_path = Path(args.tsv) if args.tsv else (
+        out_path.with_suffix(".tokens.tsv") if out_path else src.with_suffix(".tokens.tsv")
+    )
+    result = detokenize(
+        src.read_bytes(),
+        tags=tuple(t.strip() for t in args.tags.split(",") if t.strip()),
+        scope=args.scope,
+        merge_fragments=not args.keep_fragments,
+    )
+    if out_path:
+        out_path.write_bytes(result.xml)
+    else:
+        sys.stdout.buffer.write(result.xml)
+    tsv_path.write_text(rows_to_tsv(result.rows), encoding="utf-8")
+    kinds: dict[str, int] = {}
+    for r in result.rows:
+        kinds[r["kind"]] = kinds.get(r["kind"], 0) + 1
+    print(
+        f"detokenize: removed {', '.join(f'{v} <{k}>' for k, v in kinds.items()) or 'nothing'}; "
+        f"merged {result.merged_fragments} fragment(s)"
+        + (f", {result.kept_fragments} split element(s) could not be merged" if result.kept_fragments else "")
+        + f"; record: {tsv_path}",
+        file=sys.stderr,
+    )
+    return 0
+
+
 def cmd_extract(args: argparse.Namespace) -> int:
     raw = Path(args.input).read_bytes()
     raw_de, _ = deactivate(raw)
@@ -272,6 +304,20 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    # --- detokenize ---
+    p_de = sub.add_parser(
+        "detokenize",
+        help="Strip an existing tokenization (<tok>/<dtok>/<s>), keep a TSV record of it.",
+    )
+    p_de.add_argument("input")
+    p_de.add_argument("--output", help="Write the detokenized XML here (default: stdout)")
+    p_de.add_argument("--tsv", help="Record of the removed elements (default: <output or input>.tokens.tsv)")
+    p_de.add_argument("--tags", default="tok,dtok,s", help="Elements to strip (default: tok,dtok,s)")
+    p_de.add_argument("--scope", default="text", help="Only inside this element (default: text)")
+    p_de.add_argument("--keep-fragments", action="store_true",
+                      help="Do not merge split fragments (@rpt/@cont) back together")
+    p_de.set_defaults(func=cmd_detokenize)
 
     # --- extract ---
     p_ex = sub.add_parser("extract", help="Run Phase A: emit plaintext + standoff.")
