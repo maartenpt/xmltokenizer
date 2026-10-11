@@ -145,6 +145,61 @@ def cmd_detokenize(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_spans(args: argparse.Namespace) -> int:
+    """Fold a span layer (JSONL: one {start, end, tag?, attrs?, id?, parent?} per line) into
+    an already tokenized document."""
+    import json
+
+    from .spans import Span, attach_spans
+
+    raw = Path(args.input).read_bytes()
+    raw_de, ns_transform = deactivate(raw)
+    profile = _load_profile_from_args(args)
+    metadata = extract(raw_de, profile, source_path=args.input, tokenized=True)
+    spans: list[Span] = []
+    with open(args.spans, encoding="utf-8") as fh:
+        for line_no, line in enumerate(fh, start=1):
+            if not line.strip():
+                continue
+            d = json.loads(line)
+            if "start" not in d or "end" not in d:
+                print(f"spans: {args.spans}:{line_no}: needs start and end", file=sys.stderr)
+                return 2
+            spans.append(Span(str(d["start"]), str(d["end"]), tag=d.get("tag", args.tag),
+                              attrs={k: str(v) for k, v in (d.get("attrs") or {}).items()},
+                              id=d.get("id"), parent=d.get("parent")))
+    # each span goes to the scope root that holds its start id
+    def ids_of(root):
+        return {r.attrs.get("id") or r.attrs.get("xml:id") for r in root.xml_layer.records}
+    roots = [(root, ids_of(root)) for root in metadata.scope_roots]
+    total = None
+    for root, ids in roots:
+        mine = [sp for sp in spans if sp.start_id in ids]
+        if not mine:
+            continue
+        rep = attach_spans(root, mine, profile=profile, layer=args.layer,
+                           mark_widened=args.mark_widened, on_cross=args.on_cross)
+        if total is None:
+            total = rep
+        else:
+            for k in ("added", "widened", "skipped_crossing", "skipped_unknown"):
+                getattr(total, k).extend(getattr(rep, k))
+    placed = {sp.start_id for sp in spans} & set().union(*(ids for _, ids in roots)) if roots else set()
+    unplaced = [sp.id or f"{sp.start_id}..{sp.end_id}" for sp in spans if sp.start_id not in placed]
+    out = fold(metadata)
+    if args.restore_xmlns and ns_transform is not None:
+        out = reactivate(out, ns_transform)
+    if args.output:
+        Path(args.output).write_bytes(out)
+    else:
+        sys.stdout.buffer.write(out)
+    from .spans import SpanReport
+    total = total or SpanReport()
+    total.skipped_unknown.extend(unplaced)
+    print(f"spans: {total.summary()}", file=sys.stderr)
+    return 0
+
+
 def cmd_extract(args: argparse.Namespace) -> int:
     raw = Path(args.input).read_bytes()
     raw_de, _ = deactivate(raw)
@@ -338,6 +393,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_fo.add_argument("--output", help="Write XML here (default: stdout)")
     p_fo.add_argument("--restore-xmlns", action="store_true")
     p_fo.set_defaults(func=cmd_fold)
+
+    # --- spans ---
+    p_sp = sub.add_parser(
+        "spans",
+        help="Fold a span layer (new elements around existing ones, by id) into a tokenized document.",
+    )
+    p_sp.add_argument("input")
+    p_sp.add_argument("--spans", required=True,
+                      help="JSONL, one span per line: {start, end, tag?, attrs?, id?, parent?}")
+    _add_profile_args(p_sp)
+    p_sp.add_argument("--output", help="Write XML here (default: stdout)")
+    p_sp.add_argument("--tag", default="span", help="Element for spans without a tag (default: span)")
+    p_sp.add_argument("--layer", default="spans", help="Layer name (record ids; default: spans)")
+    p_sp.add_argument("--mark-widened", help="Attribute set to 1 on spans widened to a whole <tok>")
+    p_sp.add_argument("--on-cross", choices=("skip", "split"), default="skip",
+                      help="A span crossing a source element: left out (default) or split")
+    p_sp.add_argument("--restore-xmlns", action="store_true")
+    p_sp.set_defaults(func=cmd_spans)
 
     # --- tokenize ---
     p_tok = sub.add_parser(

@@ -77,6 +77,39 @@ This removes `<tok>`, `<dtok>` and `<s>` inside `<text>` (`--tags`, `--scope`), 
 
 TEI `<w>` tokens are never stripped: a TEI tokenization is converted, not discarded, and `tokenize` refuses files that contain it.
 
+## Span layers: new elements around existing ones
+
+Besides tokenizing, xmltokenizer folds further layers into a document that already has its tokens: each span names its first and last element by id, and one new element goes around them, nested by the same rules as everything else. Typical uses are constituency trees (`<node>` over tokens), named entities, or error and discourse annotation from a standoff source.
+
+```sh
+xmltokenize spans tokenized.xml --profile teitok --spans nodes.jsonl \
+    --mark-widened widened --output with-nodes.xml
+```
+
+`nodes.jsonl` has one span per line: `{"start": "w-2", "end": "w-5", "tag": "node", "attrs": {"cat": "NP"}, "id": "n7", "parent": "n3"}` (`tag`, `attrs`, `id` and `parent` are optional). As a library:
+
+```python
+from xmltokenizer import extract, fold, load_profile, Span, attach_spans
+
+profile = load_profile("teitok")
+metadata = extract(raw, profile, tokenized=True)
+report = attach_spans(metadata.scope_roots[0], [
+    Span("w-2", "w-5", tag="node", attrs={"cat": "IP"}, id="n1"),
+    Span("w-2", "w-2", tag="node", attrs={"cat": "NP"}, id="n2", parent="n1"),
+], profile=profile, mark_widened="widened")
+out = fold(metadata)
+print(report.summary())
+```
+
+What it does:
+
+- The document is read with `tokenized=True` and otherwise left exactly as it is: without the new elements, the output is byte-identical to the input (no whitespace moved, source milestones kept in their order).
+- A `<tok>` is never split: a span that starts or ends at a part of a token (a `<dtok>` of a contraction such as *chamam-se* or *da*) covers the whole token, and with `--mark-widened` carries that attribute.
+- Spans of one layer nest or stay apart. Two neighbours that would both cover one contraction (one ends in its first part, the next starts in its second) cannot both nest: the later one is left out.
+- A span that crosses a source element (`<s>`, `<u>`, `<p>`, an inline element) is left out; `--on-cross split` lets the folder split it instead (fragments with `@rpt`/`@cont`).
+- Spans of the same extent nest by `parent`; a span over a whole `<s>` goes inside it; a span over one word wraps the `<tok>`.
+- Unknown ids and every left-out span are counted in the report, never guessed.
+
 ## Install
 
 xmltokenizer is not on PyPI (yet). Install directly from the git repo:

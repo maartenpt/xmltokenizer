@@ -62,9 +62,10 @@ from .namespace import deactivate, reactivate
 from .nlp_plaintext import build as build_nlp_plaintext
 from .profile import load_profile, default_profile
 from .records import Layer, Record
+from .spans import Span, SpanReport, attach_spans, build_span_layer
 from .validate import ValidationError, run as validate
 
-__version__ = "0.0.1"
+__version__ = "0.1.0"
 
 
 def attach_conllu(
@@ -117,6 +118,10 @@ __all__ = [
     "ScopeRoot",
     "Layer",
     "Record",
+    "Span",
+    "SpanReport",
+    "attach_spans",
+    "build_span_layer",
     "extract",
     "fold",
     "attach_conllu",

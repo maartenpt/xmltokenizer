@@ -54,16 +54,25 @@ def fold_scope(root: ScopeRoot, profile: Optional[dict] = None) -> str:
     layers: list[Layer] = [root.xml_layer]
     if root.udpipe_layer is not None:
         layers.append(root.udpipe_layer)
+    layers.extend(getattr(root, "extra_layers", None) or [])
 
     # Gather all element records in deterministic order; assign each a
     # sequence number for tiebreaking at coincident offsets.
     all_records: list[Record] = []
     for layer in layers:
         all_records.extend(layer.records)
-    if profile.get("hoist_edge_whitespace", True):
+    # (not on a finished, tokenized source: only the new layers are placed; the
+    # source elements keep their whitespace)
+    if profile.get("hoist_edge_whitespace", True) and not getattr(root, "tokenized", False):
         all_records = _hoist_edge_whitespace(all_records, root.fold_plaintext, profile)
     all_records = _collapse_zero_width(all_records, root)
     rank = _nest_rank(all_records, profile)
+    if getattr(root, "tokenized", False):
+        # a finished source's own tokens are the innermost level: a new element of the
+        # same extent (a span layer's node over one word) wraps the <tok>, never the reverse
+        for rec in all_records:
+            if rec.kind == "element" and rec.layer == "xml" and rec.tag == "tok":
+                rank[rec.id] = (0, 0)
     sequence: dict[str, int] = {rec.id: i for i, rec in enumerate(all_records)}
 
     # Pre-pass: split detection + anchor-fallback materialization.
@@ -108,7 +117,18 @@ def fold_scope(root: ScopeRoot, profile: Optional[dict] = None) -> str:
     # (record order is not source order: `<quote>…<ee/></quote><ee/>` listed
     # the outer <ee/> first, which closed the <quote> before the inner one).
     _no_order = float("inf")
+    # On a finished (tokenized) source nothing is inserted between source points:
+    # they keep their source order (a text-less <tok><gap/></tok> between two
+    # <seg/> milestones stays between them).
+    finished = getattr(root, "tokenized", False)
     for offset, recs in point_records.items():
+        if finished:
+            recs.sort(key=lambda r: (
+                r.source_open_order if r.source_open_order is not None else _no_order,
+                -r.priority,
+                sequence[r.id],
+            ))
+            continue
         recs.sort(key=lambda r: (
             -r.priority,
             r.source_open_order if r.source_open_order is not None else _no_order,
@@ -417,6 +437,21 @@ def _precompute_states(
     by_start = sorted(all_elements, key=lambda r: r.start)
     atomic_by_start = [r for r in by_start if r.policy == "atomic"]
     atomic_starts = [r.start for r in atomic_by_start]
+
+    # Sentences (split-with-anchor-fallback) that a source element crosses from
+    # the inside (starts within the sentence, ends after it): the sentence becomes
+    # an anchor; the source element (e.g. a timed <u> in subtitle-style
+    # transcripts) is never split for it.
+    xml_by_start = [r for r in by_start if r.layer == "xml" and r.start < r.end]
+    xml_starts = [r.start for r in xml_by_start]
+    crossing_fallback: set[str] = set()
+    for rec in all_elements:
+        if rec.policy != "split-with-anchor-fallback":
+            continue
+        lo = bisect.bisect_right(xml_starts, rec.start)
+        hi = bisect.bisect_left(xml_starts, rec.end)
+        if any(x.end > rec.end for x in xml_by_start[lo:hi]):
+            crossing_fallback.add(rec.id)
     starts = [r.start for r in by_start]
 
     # Pre-compute `has_inner_xml` for every element record. We look at
@@ -458,7 +493,7 @@ def _precompute_states(
         would_split = False
         for i in range(hi):
             other = by_start[i]
-            if other.id == rec.id:
+            if other.id == rec.id or other.id in crossing_fallback:
                 continue
             # Must overlap rec's interval (still active when rec starts).
             if other.end <= e_start:
@@ -471,6 +506,8 @@ def _precompute_states(
                 continue
             would_split = True
             break
+        if rec.id in crossing_fallback:
+            would_split = True
         if not would_split and rec.layer == "xml" and rank.get(rec.id, (0, 0))[0] == 0:
             # an atomic element (tok) crossing this one's end is lifted
             # outside it (`_lift_atomic`): this one splits, not the tok

@@ -49,6 +49,10 @@ class ScopeRoot:
     nlp_plaintext: str = ""
     nlp_to_fold: list[int] = field(default_factory=list)
     udpipe_layer: Optional[Layer] = None
+    # further layers folded with the others (span layers: xmltokenizer.spans)
+    extra_layers: list[Layer] = field(default_factory=list)
+    # read with tokenized=True: the source is finished and is not reshaped on fold
+    tokenized: bool = False
 
 
 @dataclass
@@ -76,8 +80,13 @@ class AlreadyTokenizedError(ValueError):
     `--retokenize` flag may automate that pre-pass."""
 
 
-def run(raw: bytes, profile: dict, source_path: str = "<bytes>") -> Metadata:
-    """Parse `raw` with expat, find scope roots, build metadata."""
+def run(raw: bytes, profile: dict, source_path: str = "<bytes>", *, tokenized: bool = False) -> Metadata:
+    """Parse `raw` with expat, find scope roots, build metadata.
+
+    ``tokenized=True`` accepts a document that already has its tokens (``<tok>``,
+    ``<s>``, …): for folding further layers onto them (span layers,
+    xmltokenizer.spans), never for tokenizing it again — attach_conllu on such a
+    document would put a second tokenization on top of the first."""
     events = _parse_events(raw)
     scope_tag_match = _build_scope_tag_matcher(profile)
     scope_event_spans = _identify_scope_roots(events, scope_tag_match)
@@ -92,7 +101,8 @@ def run(raw: bytes, profile: dict, source_path: str = "<bytes>") -> Metadata:
     # root's event range and flag any `<tok>` or `<s>` element. (Empty
     # placeholder `<s/>` anchors — from the anchor-fallback path — also
     # count; the caller should still detokenize before re-running.)
-    _refuse_if_already_tokenized(events, scope_event_spans, source_path)
+    if not tokenized:
+        _refuse_if_already_tokenized(events, scope_event_spans, source_path)
 
     # Pre-pass: identify children of preferring parents that lose the
     # preferred-branch decision. Loser children get skipped during scope
@@ -107,6 +117,7 @@ def run(raw: bytes, profile: dict, source_path: str = "<bytes>") -> Metadata:
             raw, events, s_idx, e_idx, profile,
             skip_ranges, verbatim_payloads,
         )
+        root.tokenized = tokenized
         scope_roots.append(root)
 
     # Prefix is bytes from 0 up to the start of the first scope root's open tag.
