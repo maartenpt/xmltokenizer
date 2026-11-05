@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.18"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
@@ -8,6 +8,8 @@ dynamic = ["version"]
 description = "Robust inline tokenization of TEI/XML and generic XML, designed for flexipipe and standalone use."
 readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "Maarten Janssen" },
 ]
@@ -15,7 +17,6 @@ keywords = ["tei", "xml", "tokenization", "nlp", "udpipe", "flexipipe", "teitok"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",

@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+message: "If you use xmltokenizer in your research, please cite it as below."
+type: software
+title: "xmltokenizer"
+abstract: "Robust inline tokenisation of TEI/XML and generic XML, designed for flexipipe and standalone use."
+authors:
+  - family-names: Janssen
+    given-names: Maarten
+    affiliation: "Institute of Formal and Applied Linguistics, Charles University"
+license: MIT
+repository-code: "https://github.com/maartenpt/xmltokenizer"

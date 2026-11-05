@@ -138,4 +138,6 @@ Custom profiles are TOML files with `extends = "tei"` and overrides. See `xmltok
 
 ## License
 
-MIT.
+MIT — see [`LICENSE`](LICENSE).
+
+If you use xmltokenizer in research, please cite it: [`CITATION.cff`](CITATION.cff) has the reference (GitHub shows it as "Cite this repository").
